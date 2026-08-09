@@ -1,0 +1,12 @@
+# Runtime and local state
+*.log
+*.asar
+*.asar.unpacked/
+backups/
+state.json
+
+# Dependencies and editor files
+node_modules/
+.DS_Store
+Thumbs.db
+*.tmp

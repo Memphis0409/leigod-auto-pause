@@ -6,7 +6,7 @@ if (!targetRoot) throw new Error('Usage: node patch-main.js <extracted-app-asar>
 
 const mainPath = path.join(targetRoot, 'dist', 'main', 'main.js');
 const source = fs.readFileSync(mainPath, 'utf8');
-const marker = 'leigod-auto-pause:shutdown-native-v2';
+const marker = 'leigod-auto-pause:shutdown-guard-v3';
 const legacyMarker = 'leigod-auto-pause:v1';
 
 if (source.includes(marker)) {
@@ -45,6 +45,30 @@ __lapElectron.app.on("browser-window-created", (_event, win) => {
 });
 __lapElectron.app.whenReady().then(() => {
   __lapElectron.BrowserWindow.getAllWindows().forEach(__lapAttachNativeShutdownHook);
+});
+`;
+
+const shutdownGuardHook = String.raw`
+/* leigod-auto-pause:shutdown-guard-v3 */
+const __lapShutdownGuardMessage = 0x8A51;
+const __lapGuardHookedWindows = new WeakSet();
+function __lapAttachShutdownGuardHook(win) {
+  if (!win || win.isDestroyed() || __lapGuardHookedWindows.has(win)) return;
+  if (typeof win.hookWindowMessage !== "function") {
+    __lapLog("auto-shutdown-guard unsupported");
+    return;
+  }
+  __lapGuardHookedWindows.add(win);
+  win.hookWindowMessage(__lapShutdownGuardMessage, () => {
+    __lapLog("auto-shutdown-guard received");
+    __lapPause("auto-shutdown-guard", win);
+  });
+}
+__lapElectron.app.on("browser-window-created", (_event, win) => {
+  __lapAttachShutdownGuardHook(win);
+});
+__lapElectron.app.whenReady().then(() => {
+  __lapElectron.BrowserWindow.getAllWindows().forEach(__lapAttachShutdownGuardHook);
 });
 `;
 
@@ -119,9 +143,9 @@ __lapElectron.app.on("browser-window-created", (_event, win) => {
     __lapFinishQuit("auto-shutdown", win);
   });
 });
-` + nativeShutdownHook;
+` + nativeShutdownHook + shutdownGuardHook;
 
-const addition = source.includes(legacyMarker) ? nativeShutdownHook : hook;
+const addition = source.includes(legacyMarker) ? shutdownGuardHook : hook;
 const patched = source.replace(bootstrap, addition + '\n' + bootstrap);
 fs.writeFileSync(mainPath, patched, 'utf8');
 process.stdout.write(JSON.stringify({ changed: true, state: 'patched', mainPath }));

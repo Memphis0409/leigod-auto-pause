@@ -10,6 +10,8 @@ using System.Xml.Linq;
 internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
 {
     private const int WmQueryEndSession = 0x0011;
+    private const int WmClearBlockReason = 0x8A52;
+    private const uint LeigodPauseMessage = 0x8A51;
     private volatile bool allowNextShutdown;
     private int handlingShutdown;
 
@@ -30,8 +32,10 @@ internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
 
             if (Interlocked.CompareExchange(ref handlingShutdown, 1, 0) == 0)
             {
+                NativeMethods.ShutdownBlockReasonCreate(Handle, "正在等待雷神暂停时长");
                 long baselineLength = GetLogLength();
-                ThreadPool.QueueUserWorkItem(_ => PauseThenResumeShutdown(baselineLength));
+                bool pauseRequested = TriggerLeigodPause();
+                ThreadPool.QueueUserWorkItem(_ => PauseThenResumeShutdown(baselineLength, pauseRequested));
             }
 
             // Cancel the first request so Electron's suspended event loop can resume
@@ -40,27 +44,36 @@ internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
             return;
         }
 
+        if (message.Msg == WmClearBlockReason)
+        {
+            NativeMethods.ShutdownBlockReasonDestroy(Handle);
+            message.Result = IntPtr.Zero;
+            return;
+        }
+
         base.WndProc(ref message);
     }
 
-    private void PauseThenResumeShutdown(long baselineLength)
+    private void PauseThenResumeShutdown(long baselineLength, bool pauseRequested)
     {
         try
         {
             string logPath = GetLogPath();
             string shutdownArgument = DetectShutdownArgument();
             AppendLog("shutdown-guard intercepted " + shutdownArgument);
-            bool paused = WaitForPauseResult(logPath, baselineLength, TimeSpan.FromSeconds(15));
+            bool paused = pauseRequested && WaitForPauseResult(logPath, baselineLength, TimeSpan.FromSeconds(15));
 
             if (!paused)
             {
                 AppendLog("shutdown-guard pause-failed; shutdown remains cancelled");
+                ClearBlockReason();
                 Interlocked.Exchange(ref handlingShutdown, 0);
                 ShowFailureMessage();
                 return;
             }
 
             WaitForLeigodExit(TimeSpan.FromSeconds(4));
+            ClearBlockReason();
             allowNextShutdown = true;
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -80,10 +93,34 @@ internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
         }
         catch (Exception error)
         {
+            ClearBlockReason();
             Interlocked.Exchange(ref handlingShutdown, 0);
             AppendLog("shutdown-guard error " + error);
             ShowFailureMessage();
         }
+    }
+
+    private bool TriggerLeigodPause()
+    {
+        bool posted = false;
+        int[] processIds = Process.GetProcessesByName("leigod").Select(process => process.Id).ToArray();
+        NativeMethods.EnumWindows((window, parameter) =>
+        {
+            uint processId;
+            NativeMethods.GetWindowThreadProcessId(window, out processId);
+            if (processIds.Contains((int)processId) && NativeMethods.PostMessage(window, LeigodPauseMessage, IntPtr.Zero, IntPtr.Zero))
+            {
+                posted = true;
+            }
+            return true;
+        }, IntPtr.Zero);
+        AppendLog(posted ? "shutdown-guard pause-message-posted" : "shutdown-guard no-leigod-window");
+        return posted;
+    }
+
+    private void ClearBlockReason()
+    {
+        NativeMethods.SendMessage(Handle, WmClearBlockReason, IntPtr.Zero, IntPtr.Zero);
     }
 
     private static string GetLogPath()
@@ -107,7 +144,7 @@ internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
         }
     }
 
-    private static void AppendLog(string message)
+    internal static void AppendLog(string message)
     {
         try
         {
@@ -146,16 +183,16 @@ internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
                             using (StreamReader reader = new StreamReader(stream))
                             {
                                 string appended = reader.ReadToEnd();
-                                if (appended.Contains("auto-shutdown-native {\"status\":\"pause\"") ||
-                                    appended.Contains("auto-shutdown-native {\"status\":\"pause-requested\"") ||
-                                    appended.Contains("auto-shutdown-native {\"status\":\"already-paused\""))
+                                if (appended.Contains("auto-shutdown-guard {\"status\":\"pause\"") ||
+                                    appended.Contains("auto-shutdown-guard {\"status\":\"pause-requested\"") ||
+                                    appended.Contains("auto-shutdown-guard {\"status\":\"already-paused\""))
                                 {
                                     return true;
                                 }
-                                if (appended.Contains("auto-shutdown-native {\"status\":\"error\"") ||
-                                    appended.Contains("auto-shutdown-native execute-error") ||
-                                    appended.Contains("auto-shutdown-native {\"status\":\"timeout\"") ||
-                                    appended.Contains("auto-shutdown-native no-window"))
+                                if (appended.Contains("auto-shutdown-guard {\"status\":\"error\"") ||
+                                    appended.Contains("auto-shutdown-guard execute-error") ||
+                                    appended.Contains("auto-shutdown-guard {\"status\":\"timeout\"") ||
+                                    appended.Contains("auto-shutdown-guard no-window"))
                                 {
                                     return false;
                                 }
@@ -214,8 +251,35 @@ internal sealed class ShutdownGuardWindow : NativeWindow, IDisposable
 
     public void Dispose()
     {
+        NativeMethods.ShutdownBlockReasonDestroy(Handle);
         DestroyHandle();
     }
+}
+
+internal static class NativeMethods
+{
+    internal delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    internal static extern bool ShutdownBlockReasonCreate(IntPtr window, string reason);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern bool ShutdownBlockReasonDestroy(IntPtr window);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    internal static extern bool SetProcessShutdownParameters(uint level, uint flags);
 }
 
 internal static class Program
@@ -227,9 +291,11 @@ internal static class Program
         using (Mutex mutex = new Mutex(true, "Local\\LeigodAutoPauseShutdownGuard", out created))
         {
             if (!created) return;
+            bool prioritySet = NativeMethods.SetProcessShutdownParameters(0x3FF, 0);
             Application.EnableVisualStyles();
             using (ShutdownGuardWindow window = new ShutdownGuardWindow())
             {
+                ShutdownGuardWindow.AppendLog("shutdown-guard started priority=" + (prioritySet ? "0x3FF" : "failed"));
                 Application.Run();
             }
         }

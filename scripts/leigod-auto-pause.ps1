@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Marker = 'leigod-auto-pause:shutdown-native-v2'
+$Marker = 'leigod-auto-pause:shutdown-guard-v3'
 $RendererMarker = 'leigod-auto-pause:renderer-core-v2'
 $StateRoot = Join-Path $env:LOCALAPPDATA 'LeigodAutoPause'
 $BackupRoot = Join-Path $StateRoot 'backups'

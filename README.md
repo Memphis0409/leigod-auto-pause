@@ -2,12 +2,12 @@
 
 这是一个面向 Windows 版雷神加速器的 Codex 个人插件。它会在退出雷神或 Windows 关机/重启前，调用雷神客户端自身的暂停时长逻辑。
 
-> 本项目不是雷神官方插件，会修改雷神客户端的 `app.asar` 和 `renderer.asar`。安装前会按 SHA-256 备份原文件，可随时卸载还原。
+> 本项目不是雷神官方插件，会修改雷神客户端的 `app.asar` 和 `renderer.asar`，并为当前 Windows 用户安装一个轻量关机守卫。安装前会按 SHA-256 备份原文件，可随时卸载还原。
 
 ## 功能
 
 - 右上角关闭并确认退出时，先暂停时长，再关闭客户端。
-- Windows 正常关机或重启时尝试自动暂停。
+- Windows 正常关机或重启时，守卫会取消第一次关机，让雷神完成暂停；确认成功后自动继续原来的关机类型。
 - 支持状态检查、雷神升级后修复和卸载还原。
 - 不读取、不保存雷神账号、密码或 GitHub 凭据。
 
@@ -87,7 +87,9 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 {
   "mainPatched": true,
   "rendererPatched": true,
-  "patched": true
+  "patched": true,
+  "guardInstalled": true,
+  "guardRunning": true
 }
 ```
 
@@ -129,10 +131,13 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 %LOCALAPPDATA%\LeigodAutoPause\
 ├── backups\
 ├── state.json
-└── auto-pause.log
+├── auto-pause.log
+└── LeigodAutoPauseShutdownGuard.exe
 ```
 
 这些文件不会提交到 GitHub。
+
+关机守卫会注册到当前用户的登录启动项；执行 `-Action Uninstall` 时会停止并移除守卫及其启动项。
 
 ## 作为 Codex 个人插件使用（可选）
 
@@ -163,5 +168,6 @@ Codex 插件机制可参考 [OpenAI Developers](https://developers.openai.com/) 
 ## 限制
 
 - 断电、强制结束进程或系统崩溃时无法保证暂停。
+- 自动暂停失败时，守卫会取消本次关机并显示提示，避免误以为时长已经暂停。
 - 账号未登录、网络断开或当前消耗的是不可暂停时长时，雷神可能拒绝暂停。
 - 雷神更新客户端结构后，补丁程序可能需要同步更新。

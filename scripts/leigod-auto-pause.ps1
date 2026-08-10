@@ -11,6 +11,36 @@ $RendererMarker = 'leigod-auto-pause:renderer-core-v2'
 $StateRoot = Join-Path $env:LOCALAPPDATA 'LeigodAutoPause'
 $BackupRoot = Join-Path $StateRoot 'backups'
 $StateFile = Join-Path $StateRoot 'state.json'
+$GuardSource = Join-Path $PSScriptRoot 'shutdown-guard.cs'
+$GuardExe = Join-Path $StateRoot 'LeigodAutoPauseShutdownGuard.exe'
+$GuardRunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$GuardRunName = 'LeigodAutoPauseShutdownGuard'
+
+function Install-ShutdownGuard {
+    $compiler = @(
+        'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe',
+        'C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe'
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $compiler) { throw 'The Windows .NET Framework C# compiler was not found.' }
+    if (-not (Test-Path -LiteralPath $GuardSource)) { throw "Shutdown guard source is missing: $GuardSource" }
+
+    New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+    Get-Process LeigodAutoPauseShutdownGuard -ErrorAction SilentlyContinue | Stop-Process -Force
+    & $compiler /nologo /target:winexe /optimize+ "/out:$GuardExe" /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Xml.Linq.dll $GuardSource
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $GuardExe)) { throw 'Failed to compile the Windows shutdown guard.' }
+    New-ItemProperty -Path $GuardRunKey -Name $GuardRunName -Value ('"' + $GuardExe + '"') -PropertyType String -Force | Out-Null
+    Start-Process -FilePath $GuardExe -WindowStyle Hidden
+    for ($attempt = 0; $attempt -lt 20 -and -not (Get-Process LeigodAutoPauseShutdownGuard -ErrorAction SilentlyContinue); $attempt++) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Get-Process LeigodAutoPauseShutdownGuard -ErrorAction SilentlyContinue)) { throw 'The Windows shutdown guard did not start.' }
+}
+
+function Uninstall-ShutdownGuard {
+    Get-Process LeigodAutoPauseShutdownGuard -ErrorAction SilentlyContinue | Stop-Process -Force
+    Remove-ItemProperty -Path $GuardRunKey -Name $GuardRunName -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $GuardExe) { Remove-Item -LiteralPath $GuardExe -Force }
+}
 
 function Find-LeigodRoot {
     if ($InstallPath) {
@@ -107,13 +137,15 @@ function Get-State([string]$Root) {
         patched = ($mainText.Contains($Marker) -and $rendererPatched)
         running = [bool](Get-Process leigod -ErrorAction SilentlyContinue)
         restartRequired = [bool]((Get-Process leigod -ErrorAction SilentlyContinue) -and $mainText.Contains($Marker))
+        guardInstalled = [bool]((Test-Path -LiteralPath $GuardExe) -and (Get-ItemProperty -Path $GuardRunKey -Name $GuardRunName -ErrorAction SilentlyContinue))
+        guardRunning = [bool](Get-Process LeigodAutoPauseShutdownGuard -ErrorAction SilentlyContinue)
         logPath = Join-Path $StateRoot 'auto-pause.log'
     }
 }
 
 function Install-Patch([string]$Root) {
     $current = Get-State $Root
-    if ($current.patched) { return }
+    if ($current.patched) { Install-ShutdownGuard; return }
     $tool = Find-Toolchain
     $asar = Join-Path $Root 'resources\app.asar'
     $rendererAsar = Join-Path $Root 'resources\renderer.asar'
@@ -170,6 +202,7 @@ function Install-Patch([string]$Root) {
         }
         New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
         $state | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding UTF8
+        Install-ShutdownGuard
     } finally {
         $env:Path = $oldPath
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
@@ -192,6 +225,7 @@ function Uninstall-Patch([string]$Root) {
     if ($state.rendererBackupPath) {
         Copy-Item -LiteralPath $state.rendererBackupPath -Destination (Join-Path $Root 'resources\renderer.asar') -Force
     }
+    Uninstall-ShutdownGuard
     Remove-Item -LiteralPath $StateFile -Force
 }
 

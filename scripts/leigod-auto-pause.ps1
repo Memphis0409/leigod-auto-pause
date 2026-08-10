@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Marker = 'leigod-auto-pause:v1'
+$Marker = 'leigod-auto-pause:shutdown-native-v2'
 $RendererMarker = 'leigod-auto-pause:renderer-core-v2'
 $StateRoot = Join-Path $env:LOCALAPPDATA 'LeigodAutoPause'
 $BackupRoot = Join-Path $StateRoot 'backups'
@@ -130,9 +130,14 @@ function Install-Patch([string]$Root) {
     try {
         $env:Path = (Split-Path -Parent $tool.Node) + ';' + $env:Path
         if (-not $current.mainPatched) {
-            $hash = (Get-FileHash -LiteralPath $asar -Algorithm SHA256).Hash.ToLowerInvariant()
-            $backup = Join-Path $BackupRoot ($hash + '.app.asar')
-            if (-not (Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $asar -Destination $backup }
+            if ($existingState -and $existingState.originalHash -and $existingState.backupPath) {
+                $hash = $existingState.originalHash
+                $backup = $existingState.backupPath
+            } else {
+                $hash = (Get-FileHash -LiteralPath $asar -Algorithm SHA256).Hash.ToLowerInvariant()
+                $backup = Join-Path $BackupRoot ($hash + '.app.asar')
+                if (-not (Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $asar -Destination $backup }
+            }
             $extractRoot = Join-Path $tempRoot 'app'
             $packed = Join-Path $tempRoot 'app.asar'
             Invoke-Asar $tool @('extract', $asar, $extractRoot)

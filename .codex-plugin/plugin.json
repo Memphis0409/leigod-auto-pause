@@ -1,6 +1,6 @@
 {
   "name": "leigod-auto-pause",
-  "version": "0.1.0+codex.20260809112330",
+  "version": "0.1.0+codex.20260810011408",
   "description": "Automatically pause Leigod accelerator time before app exit or Windows shutdown.",
   "author": {
     "name": "Yuheng"

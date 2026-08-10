@@ -6,7 +6,8 @@ if (!targetRoot) throw new Error('Usage: node patch-main.js <extracted-app-asar>
 
 const mainPath = path.join(targetRoot, 'dist', 'main', 'main.js');
 const source = fs.readFileSync(mainPath, 'utf8');
-const marker = 'leigod-auto-pause:v1';
+const marker = 'leigod-auto-pause:shutdown-native-v2';
+const legacyMarker = 'leigod-auto-pause:v1';
 
 if (source.includes(marker)) {
   process.stdout.write(JSON.stringify({ changed: false, state: 'already-patched', mainPath }));
@@ -17,6 +18,35 @@ const bootstrap = 'require("./main.jsc");';
 if (!source.includes(bootstrap)) {
   throw new Error('Unsupported Leigod main.js layout: main.jsc bootstrap was not found.');
 }
+
+const nativeShutdownHook = String.raw`
+/* leigod-auto-pause:shutdown-native-v2 */
+const __lapNativeShutdownMessage = 0x0011; // WM_QUERYENDSESSION
+const __lapNativeHookedWindows = new WeakSet();
+let __lapNativeShutdownSeen = false;
+function __lapAttachNativeShutdownHook(win) {
+  if (!win || win.isDestroyed() || __lapNativeHookedWindows.has(win)) return;
+  if (typeof win.hookWindowMessage !== "function") {
+    __lapLog("auto-shutdown-native unsupported");
+    return;
+  }
+  __lapNativeHookedWindows.add(win);
+  win.hookWindowMessage(__lapNativeShutdownMessage, () => {
+    if (__lapNativeShutdownSeen) return;
+    __lapNativeShutdownSeen = true;
+    const reset = setTimeout(() => { __lapNativeShutdownSeen = false; }, 15000);
+    if (reset.unref) reset.unref();
+    __lapLog("auto-shutdown-native received");
+    __lapPause("auto-shutdown-native", win);
+  });
+}
+__lapElectron.app.on("browser-window-created", (_event, win) => {
+  __lapAttachNativeShutdownHook(win);
+});
+__lapElectron.app.whenReady().then(() => {
+  __lapElectron.BrowserWindow.getAllWindows().forEach(__lapAttachNativeShutdownHook);
+});
+`;
 
 const hook = String.raw`
 /* leigod-auto-pause:v1 */
@@ -89,8 +119,9 @@ __lapElectron.app.on("browser-window-created", (_event, win) => {
     __lapFinishQuit("auto-shutdown", win);
   });
 });
-`;
+` + nativeShutdownHook;
 
-const patched = source.replace(bootstrap, hook + '\n' + bootstrap);
+const addition = source.includes(legacyMarker) ? nativeShutdownHook : hook;
+const patched = source.replace(bootstrap, addition + '\n' + bootstrap);
 fs.writeFileSync(mainPath, patched, 'utf8');
 process.stdout.write(JSON.stringify({ changed: true, state: 'patched', mainPath }));
